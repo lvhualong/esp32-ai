@@ -34,9 +34,11 @@ static const char* const STATE_STRINGS[] = {
 };
 
 Application::Application() {
+    // 创建事件组，用于管理事件
     event_group_ = xEventGroupCreate();
+    // 创建后台任务，用于处理音频编码、解码等耗时操作，避免阻塞线程，栈大小32KB
     background_task_ = new BackgroundTask(4096 * 8);
-
+    // 创建时钟定时器，用于更新时间
     esp_timer_create_args_t clock_timer_args = {
         .callback = [](void* arg) {
             Application* app = (Application*)arg;
@@ -48,7 +50,7 @@ Application::Application() {
         .skip_unhandled_events = true
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
-    esp_timer_start_periodic(clock_timer_handle_, 1000000);
+    esp_timer_start_periodic(clock_timer_handle_, 1000000); // 周期1s
 }
 
 Application::~Application() {
@@ -334,35 +336,47 @@ void Application::StopListening() {
         }
     });
 }
-
+// 启动应用
 void Application::Start() {
     auto& board = Board::GetInstance();
     SetDeviceState(kDeviceStateStarting);
 
     /* Setup the display */
-    auto display = board.GetDisplay();
+    auto display = board.GetDisplay(); //获取显示屏
 
     /* Setup the audio codec */
-    auto codec = board.GetAudioCodec();
+    auto codec = board.GetAudioCodec(); //获取音频编解码器
     opus_decoder_ = std::make_unique<OpusDecoderWrapper>(codec->output_sample_rate(), 1, OPUS_FRAME_DURATION_MS);
     opus_encoder_ = std::make_unique<OpusEncoderWrapper>(16000, 1, OPUS_FRAME_DURATION_MS);
     if (realtime_chat_enabled_) {
+        // Opus 编码复杂度 是平衡编码质量和CUP占用的
+        // 0 是最低质量，复杂度低、CPU占用低、编码延迟低、适合实时通信
         ESP_LOGI(TAG, "Realtime chat enabled, setting opus encoder complexity to 0");
         opus_encoder_->SetComplexity(0);
     } else if (board.GetBoardType() == "ml307") {
+        // 带ML307 4G 模组
+        // 带4g 模组 网络传输相对可靠
         ESP_LOGI(TAG, "ML307 board detected, setting opus encoder complexity to 5");
         opus_encoder_->SetComplexity(5);
     } else {
+        // 使用WIFI模组，非实时，设置适中的编码复杂度
         ESP_LOGI(TAG, "WiFi board detected, setting opus encoder complexity to 3");
         opus_encoder_->SetComplexity(3);
     }
 
+    // 16 KHz 输入采样率  (适合人声处理, 语音识别常用的采样率)
+    // 采样率越高，音质越好，但数据量越大，采样率越低，带宽占用越小，适合网络传输
     if (codec->input_sample_rate() != 16000) {
         input_resampler_.Configure(codec->input_sample_rate(), 16000);
         reference_resampler_.Configure(codec->input_sample_rate(), 16000);
     }
     codec->Start();
 
+    // FreeRTOS 函数，创建音频处理任务 AudioLoop
+    // 创建一个任务，运行 AudioLoop 函数，任务名称为 "audio_loop"，
+    // 任务堆栈大小为 4096 * 2，任务优先级为 8，
+    // 任务句柄为 audio_loop_task_handle_, 用于后续管理任务
+    // realtime_chat_enabled_ ? 1 : 0 表示是否启用实时聊天, 决定绑定到核心 0 或 1
     xTaskCreatePinnedToCore([](void* arg) {
         Application* app = (Application*)arg;
         app->AudioLoop();
@@ -376,8 +390,9 @@ void Application::Start() {
     CheckNewVersion();
 
     // Initialize the protocol
-    display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
+    display->SetStatus(Lang::Strings::LOADING_PROTOCOL); // 显示状态，连接服务器
 
+    // 根据 配置选择 MQTT 或 Websocket 通信协议
     if (ota_.HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota_.HasWebsocketConfig()) {
@@ -387,10 +402,13 @@ void Application::Start() {
         protocol_ = std::make_unique<MqttProtocol>();
     }
 
+    // 回调函数捕获 网络断开/超时， 显示错误信息、表情、提示音
     protocol_->OnNetworkError([this](const std::string& message) {
         SetDeviceState(kDeviceStateIdle);
         Alert(Lang::Strings::ERROR, message.c_str(), "sad", Lang::Sounds::P3_EXCLAMATION);
     });
+
+    // 回调函数捕获 音频数据， 将音频数据放入音频解码队列
     protocol_->OnIncomingAudio([this](std::vector<uint8_t>&& data) {
         const int max_packets_in_queue = 600 / OPUS_FRAME_DURATION_MS;
         std::lock_guard<std::mutex> lock(mutex_);
@@ -422,17 +440,17 @@ void Application::Start() {
     });
     protocol_->OnIncomingJson([this, display](const cJSON* root) {
         // Parse JSON data
-        auto type = cJSON_GetObjectItem(root, "type");
-        if (strcmp(type->valuestring, "tts") == 0) {
-            auto state = cJSON_GetObjectItem(root, "state");
-            if (strcmp(state->valuestring, "start") == 0) {
+        auto type = cJSON_GetObjectItem(root, "type"); //获取消息类型
+        if (strcmp(type->valuestring, "tts") == 0) {  // ---处理TTS消息---
+            auto state = cJSON_GetObjectItem(root, "state"); //获取TTS消息状态
+            if (strcmp(state->valuestring, "start") == 0) { // TTS开始
                 Schedule([this]() {
                     aborted_ = false;
                     if (device_state_ == kDeviceStateIdle || device_state_ == kDeviceStateListening) {
                         SetDeviceState(kDeviceStateSpeaking);
                     }
                 });
-            } else if (strcmp(state->valuestring, "stop") == 0) {
+            } else if (strcmp(state->valuestring, "stop") == 0) { // TTS结束
                 Schedule([this]() {
                     background_task_->WaitForCompletion();
                     if (device_state_ == kDeviceStateSpeaking) {
@@ -443,44 +461,44 @@ void Application::Start() {
                         }
                     }
                 });
-            } else if (strcmp(state->valuestring, "sentence_start") == 0) {
-                auto text = cJSON_GetObjectItem(root, "text");
+            } else if (strcmp(state->valuestring, "sentence_start") == 0) { // TTS 句子开始
+                auto text = cJSON_GetObjectItem(root, "text"); // 获取TTS文本
                 if (text != NULL) {
-                    ESP_LOGI(TAG, "<< %s", text->valuestring);
+                    ESP_LOGI(TAG, "<< %s", text->valuestring); // 打印TTS文本 并显示
                     Schedule([this, display, message = std::string(text->valuestring)]() {
                         display->SetChatMessage("assistant", message.c_str());
                     });
                 }
             }
-        } else if (strcmp(type->valuestring, "stt") == 0) {
-            auto text = cJSON_GetObjectItem(root, "text");
+        } else if (strcmp(type->valuestring, "stt") == 0) { // ---处理STT消息---
+            auto text = cJSON_GetObjectItem(root, "text"); // 获取STT文本
             if (text != NULL) {
-                ESP_LOGI(TAG, ">> %s", text->valuestring);
+                ESP_LOGI(TAG, ">> %s", text->valuestring); // 打印STT文本 并显 示
                 Schedule([this, display, message = std::string(text->valuestring)]() {
                     display->SetChatMessage("user", message.c_str());
                 });
             }
-        } else if (strcmp(type->valuestring, "llm") == 0) {
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
+        } else if (strcmp(type->valuestring, "llm") == 0) { // ---处理LLM消息---
+            auto emotion = cJSON_GetObjectItem(root, "emotion"); // 获取LLM表情
             if (emotion != NULL) {
                 Schedule([this, display, emotion_str = std::string(emotion->valuestring)]() {
                     display->SetEmotion(emotion_str.c_str());
                 });
             }
-        } else if (strcmp(type->valuestring, "iot") == 0) {
-            auto commands = cJSON_GetObjectItem(root, "commands");
+        } else if (strcmp(type->valuestring, "iot") == 0) { // ---处理IOT消息---
+            auto commands = cJSON_GetObjectItem(root, "commands"); // 获取IOT命令
             if (commands != NULL) {
-                auto& thing_manager = iot::ThingManager::GetInstance();
+                auto& thing_manager = iot::ThingManager::GetInstance(); // 获取IOT管理器实例
                 for (int i = 0; i < cJSON_GetArraySize(commands); ++i) {
-                    auto command = cJSON_GetArrayItem(commands, i);
-                    thing_manager.Invoke(command);
+                    auto command = cJSON_GetArrayItem(commands, i); // 获取IOT命令
+                    thing_manager.Invoke(command); // 执行IOT命令
                 }
             }
-        } else if (strcmp(type->valuestring, "system") == 0) {
-            auto command = cJSON_GetObjectItem(root, "command");
+        } else if (strcmp(type->valuestring, "system") == 0) { // ---处理系统消息---
+            auto command = cJSON_GetObjectItem(root, "command"); // 获取系统命令
             if (command != NULL) {
-                ESP_LOGI(TAG, "System command: %s", command->valuestring);
-                if (strcmp(command->valuestring, "reboot") == 0) {
+                ESP_LOGI(TAG, "System command: %s", command->valuestring); // 打印系统命令
+                if (strcmp(command->valuestring, "reboot") == 0) { // 重启  
                     // Do a reboot if user requests a OTA update
                     Schedule([this]() {
                         Reboot();
@@ -489,10 +507,10 @@ void Application::Start() {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
             }
-        } else if (strcmp(type->valuestring, "alert") == 0) {
-            auto status = cJSON_GetObjectItem(root, "status");
-            auto message = cJSON_GetObjectItem(root, "message");
-            auto emotion = cJSON_GetObjectItem(root, "emotion");
+        } else if (strcmp(type->valuestring, "alert") == 0) { // ---处理告警消息---
+            auto status = cJSON_GetObjectItem(root, "status"); // 获取告警状态
+            auto message = cJSON_GetObjectItem(root, "message"); // 获取告警消息
+            auto emotion = cJSON_GetObjectItem(root, "emotion"); // 获取告警表情
             if (status != NULL && message != NULL && emotion != NULL) {
                 Alert(status->valuestring, message->valuestring, emotion->valuestring, Lang::Sounds::P3_VIBRATION);
             } else {
@@ -503,12 +521,15 @@ void Application::Start() {
     bool protocol_started = protocol_->Start();
 
 #if CONFIG_USE_AUDIO_PROCESSOR
+    // 初始化音频处理器
     audio_processor_.Initialize(codec, realtime_chat_enabled_);
+    // 音频处理器回调，接收音频数据data, 调度到后台任务中执行
     audio_processor_.OnOutput([this](std::vector<int16_t>&& data) {
         background_task_->Schedule([this, data = std::move(data)]() mutable {
-            if (protocol_->IsAudioChannelBusy()) {
+            if (protocol_->IsAudioChannelBusy()) { // 如果音频通道繁忙，则直接返回
                 return;
             }
+            // opus编码音频数据，调度到主线程发送音频数据
             opus_encoder_->Encode(std::move(data), [this](std::vector<uint8_t>&& opus) {
                 Schedule([this, opus = std::move(opus)]() {
                     protocol_->SendAudio(opus);
@@ -516,6 +537,7 @@ void Application::Start() {
             });
         });
     });
+    // (VOD)语音活动检测，检测是否正在说话，使用LED提示说话状态
     audio_processor_.OnVadStateChange([this](bool speaking) {
         if (device_state_ == kDeviceStateListening) {
             Schedule([this, speaking]() {
@@ -531,10 +553,13 @@ void Application::Start() {
     });
 #endif
 
+// 处理唤醒词检测事件
+// 初始化唤醒词检测, 并设置唤醒词检测回调, 接收唤醒词并调度到主线程执行，根据不同状态执行不同动作
 #if CONFIG_USE_WAKE_WORD_DETECT
     wake_word_detect_.Initialize(codec);
     wake_word_detect_.OnWakeWordDetected([this](const std::string& wake_word) {
         Schedule([this, &wake_word]() {
+            // 如果设备处于空闲状态，则设置为连接状态，并编码唤醒词数据，上传到服务端，设置接听模式
             if (device_state_ == kDeviceStateIdle) {
                 SetDeviceState(kDeviceStateConnecting);
                 wake_word_detect_.EncodeWakeWordData();
@@ -554,8 +579,10 @@ void Application::Start() {
                 ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
                 SetListeningMode(realtime_chat_enabled_ ? kListeningModeRealtime : kListeningModeAutoStop);
             } else if (device_state_ == kDeviceStateSpeaking) {
+                // 如果设备处于说话状态，则打断说话
                 AbortSpeaking(kAbortReasonWakeWordDetected);
             } else if (device_state_ == kDeviceStateActivating) {
+                // 如果设备处于激活状态，则设置为空闲状态   
                 SetDeviceState(kDeviceStateIdle);
             }
         });
@@ -564,6 +591,8 @@ void Application::Start() {
 #endif
 
     // Wait for the new version check to finish
+    // xEventGroupWaitBits 是 FreeRTOS 中用于等待事件组中特定事件位的函数，
+    // 通过设置事件位、清除事件和超时处理，实现任务同步和事件通知。在版本检查等场景中，用于等待新版本检测事件的完成。
     xEventGroupWaitBits(event_group_, CHECK_NEW_VERSION_DONE_EVENT, pdTRUE, pdFALSE, portMAX_DELAY);
     SetDeviceState(kDeviceStateIdle);
 
@@ -587,12 +616,14 @@ void Application::OnClockTimer() {
     if (clock_ticks_ % 10 == 0) {
         // SystemInfo::PrintRealTimeStats(pdMS_TO_TICKS(1000));
 
+        // 打印内存使用情况， SRAM 和 PSRAM
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
         ESP_LOGI(TAG, "Free internal: %u minimal internal: %u", free_sram, min_free_sram);
 
         // If we have synchronized server time, set the status to clock "HH:MM" if the device is idle
         if (ota_.HasServerTime()) {
+            // 如果设备处于空闲状态，显示系统时间
             if (device_state_ == kDeviceStateIdle) {
                 Schedule([this]() {
                     // Set status to clock "HH:MM"
@@ -609,10 +640,10 @@ void Application::OnClockTimer() {
 // Add a async task to MainLoop
 void Application::Schedule(std::function<void()> callback) {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        main_tasks_.push_back(std::move(callback));
+        std::lock_guard<std::mutex> lock(mutex_); // 加锁包含任务队列，避免多线程竞争
+        main_tasks_.push_back(std::move(callback)); // 添加任务到任务队列
     }
-    xEventGroupSetBits(event_group_, SCHEDULE_EVENT);
+    xEventGroupSetBits(event_group_, SCHEDULE_EVENT); // 设置事件位，通知MainEventLoop有新任务需要执行
 }
 
 // The Main Event Loop controls the chat state and websocket connection

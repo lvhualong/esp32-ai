@@ -163,7 +163,7 @@ if(CONFIG_USE_WAKE_WORD_DETECT)
     list(APPEND SOURCES "audio_processing/wake_word_detect.cc")
 endif()
 
-# 根据Kconfig选择语言目录
+# 根据Kconfig选择语言目录   
 if(CONFIG_LANGUAGE_ZH_CN)
     set(LANG_DIR "zh-CN")
 elseif(CONFIG_LANGUAGE_ZH_TW)
@@ -204,6 +204,15 @@ target_compile_definitions(${COMPONENT_LIB}
                     )
 
 # 添加生成规则
+# add_custom_command 用于添加自定义命令，用于生成语言配置头文件 lang_config.h
+# 语法有4部分, 
+# 1. OUTPUT 输出文件
+# 2. COMMAND 命令
+# 3. DEPENDS 依赖
+# 4. COMMENT 注释
+# 执行时机：在 build 阶段执行make, CMake 会检查目标文件和依赖项的状态, 
+# 如果目标文件不存在或依赖项被修改，CMake 会执行 add_custom_command 中定义的命令
+# 执行完成后，生成 lang_config.h 文件，供后续编译使用
 add_custom_command(
     OUTPUT ${LANG_HEADER}
     COMMAND python ${PROJECT_DIR}/scripts/gen_lang.py
@@ -216,6 +225,11 @@ add_custom_command(
 )
 
 # 强制建立生成依赖
+# add_custom_target 是 CMake 中用于定义自定义目标的指令
+# lang_header 是自定义目标的名称
+# ALL 表示该目标会被默认构建（即执行 make 时会自动构建该目标）
+# DEPENDS ${LANG_HEADER} 表示该目标依赖于 LANG_HEADER 文件（即 lang_config.h）
+# 确保 lang_config.h 文件在每次构建时都被正确生成，从而支持项目的多语言功能
 add_custom_target(lang_header ALL
     DEPENDS ${LANG_HEADER}
 )

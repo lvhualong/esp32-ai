@@ -22,7 +22,7 @@
 
 ## 已实现功能
 
-- Wi-Fi / ML307 Cat.1 4G
+- Wi-Fi / ML307 Cat.1 4G (4G模组)
 - BOOT 键唤醒和打断，支持点击和长按两种触发方式
 - 离线语音唤醒 [ESP-SR](https://github.com/espressif/esp-sr)
 - 流式语音对话（WebSocket 或 UDP 协议）

@@ -12,19 +12,19 @@
 #include <vector>
 #include <condition_variable>
 
-#include <opus_encoder.h>
+#include <opus_encoder.h> //音频编解码
 #include <opus_decoder.h>
-#include <opus_resampler.h>
+#include <opus_resampler.h> //音频重采样
 
-#include "protocol.h"
-#include "ota.h"
-#include "background_task.h"
+#include "protocol.h" //通信协议层 websocket mqtt
+#include "ota.h" //固件升级
+#include "background_task.h" //后台任务
 
 #if CONFIG_USE_WAKE_WORD_DETECT
-#include "wake_word_detect.h"
+#include "wake_word_detect.h" //唤醒词检测
 #endif
 #if CONFIG_USE_AUDIO_PROCESSOR
-#include "audio_processor.h"
+#include "audio_processor.h" //音频处理
 #endif
 
 #define SCHEDULE_EVENT (1 << 0)
@@ -32,20 +32,21 @@
 #define AUDIO_OUTPUT_READY_EVENT (1 << 2)
 #define CHECK_NEW_VERSION_DONE_EVENT (1 << 3)
 
+// 设备状态转移
 enum DeviceState {
-    kDeviceStateUnknown,
-    kDeviceStateStarting,
-    kDeviceStateWifiConfiguring,
-    kDeviceStateIdle,
-    kDeviceStateConnecting,
-    kDeviceStateListening,
-    kDeviceStateSpeaking,
-    kDeviceStateUpgrading,
-    kDeviceStateActivating,
-    kDeviceStateFatalError
+    kDeviceStateUnknown, // 未知
+    kDeviceStateStarting, // 启动中
+    kDeviceStateWifiConfiguring, // 配网中
+    kDeviceStateIdle, // 空闲
+    kDeviceStateConnecting, // 连接中
+    kDeviceStateListening, // 聆听中
+    kDeviceStateSpeaking, // 说话中
+    kDeviceStateUpgrading, // 升级中
+    kDeviceStateActivating, // 激活中
+    kDeviceStateFatalError // 致命错误
 };
 
-#define OPUS_FRAME_DURATION_MS 60
+#define OPUS_FRAME_DURATION_MS 60 // 60ms 一个音频帧
 
 class Application {
 public:
@@ -59,7 +60,7 @@ public:
 
     void Start();
     DeviceState GetDeviceState() const { return device_state_; }
-    bool IsVoiceDetected() const { return voice_detected_; }
+    bool IsVoiceDetected() const { return voice_detected_; } 
     void Schedule(std::function<void()> callback);
     void SetDeviceState(DeviceState state);
     void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
@@ -79,23 +80,23 @@ private:
     ~Application();
 
 #if CONFIG_USE_WAKE_WORD_DETECT
-    WakeWordDetect wake_word_detect_;
+    WakeWordDetect wake_word_detect_; // 唤醒词检测功能
 #endif
 #if CONFIG_USE_AUDIO_PROCESSOR
-    AudioProcessor audio_processor_;
+    AudioProcessor audio_processor_; // 音频处理功能(降噪, 回声消除)
 #endif
-    Ota ota_;
-    std::mutex mutex_;
-    std::list<std::function<void()>> main_tasks_;
-    std::unique_ptr<Protocol> protocol_;
-    EventGroupHandle_t event_group_ = nullptr;
-    esp_timer_handle_t clock_timer_handle_ = nullptr;
-    volatile DeviceState device_state_ = kDeviceStateUnknown;
-    ListeningMode listening_mode_ = kListeningModeAutoStop;
+    Ota ota_; // 固件升级功能
+    std::mutex mutex_; // 互斥锁
+    std::list<std::function<void()>> main_tasks_; // 主任务列表
+    std::unique_ptr<Protocol> protocol_; // 协议层
+    EventGroupHandle_t event_group_ = nullptr; // 事件组
+    esp_timer_handle_t clock_timer_handle_ = nullptr; // 时钟定时器
+    volatile DeviceState device_state_ = kDeviceStateUnknown; // 设备状态
+    ListeningMode listening_mode_ = kListeningModeAutoStop; // 聆听模式
 #if CONFIG_USE_REALTIME_CHAT
-    bool realtime_chat_enabled_ = true;
+    bool realtime_chat_enabled_ = true; // 实时聊天功能
 #else
-    bool realtime_chat_enabled_ = false;
+    bool realtime_chat_enabled_ = false; // 实时聊天功能    
 #endif
     bool aborted_ = false;
     bool voice_detected_ = false;

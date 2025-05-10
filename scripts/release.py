@@ -18,6 +18,7 @@ def get_board_type():
             return board_type
     return None
 
+# 根据最外层 CMakeLists.txt中的set(PROJECT_VER "xxx")获取项目版本
 def get_project_version():
     with open("CMakeLists.txt") as f:
         for line in f:
@@ -49,6 +50,7 @@ def release_current():
     print("project version:", project_version)
     zip_bin(board_type, project_version)
 
+# 获取main/CMakeLists.txt中所有板子类型
 def get_all_board_types():
     board_configs = {}
     with open("main/CMakeLists.txt", encoding='utf-8') as f:
@@ -64,40 +66,41 @@ def get_all_board_types():
                     board_configs[config_name] = board_type
     return board_configs
 
+#  根据指定板子类型和配置文件，生成指定板子的固件
 def release(board_type, board_config):
     config_path = f"main/boards/{board_type}/config.json"
     if not os.path.exists(config_path):
         print(f"跳过 {board_type} 因为 config.json 不存在")
         return
 
-    # Print Project Version
+    # Print Project Version 根据CMakeLists.txt
     project_version = get_project_version()
     print(f"Project Version: {project_version}", config_path)
 
     with open(config_path, "r") as f:
         config = json.load(f)
-    target = config["target"]
-    builds = config["builds"]
+    target = config["target"] # 获取芯片类型
+    builds = config["builds"] # 获取所有构建配置 name & sdkconfig_append
     
     for build in builds:
         name = build["name"]
         if not name.startswith(board_type):
             raise ValueError(f"name {name} 必须以 {board_type} 开头")
-        output_path = f"releases/v{project_version}_{name}.zip"
+        output_path = f"releases/v{project_version}_{name}.zip" # 输出的固件路径名称
         if os.path.exists(output_path):
             print(f"跳过 {board_type} 因为 {output_path} 已存在")
             continue
 
-        sdkconfig_append = [f"{board_config}=y"]
+        sdkconfig_append = [f"{board_config}=y"] # 指定板子类型 大写
         for append in build.get("sdkconfig_append", []):
             sdkconfig_append.append(append)
         print(f"name: {name}")
         print(f"target: {target}")
         for append in sdkconfig_append:
             print(f"sdkconfig_append: {append}")
-        # unset IDF_TARGET
+        # unset IDF_TARGET 清除系统环境变量所设置的芯片类型
         os.environ.pop("IDF_TARGET", None)
-        # Call set-target
+        # Call set-target 设置芯片类型
         if os.system(f"idf.py set-target {target}") != 0:
             print("set-target failed")
             sys.exit(1)

@@ -3,6 +3,11 @@ import argparse
 import json
 import os
 
+## 将 JSON 中的字符串转换为 C++ 常量， 并生成头文件，用于多语言支持，将不同语言的字符串和音效资源统一管理
+## 扫描指定目录下的 .p3 文件（音效文件），生成对应的 C++ 常量，用于在代码中引用这些音效
+## 使用方法：
+## python3 gen_lang.py --input assets/en-US/language.json --output src/assets/en-US/language.h
+
 HEADER_TEMPLATE = """// Auto-generated language config
 #pragma once
 
